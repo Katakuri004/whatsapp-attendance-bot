@@ -92,3 +92,7 @@ ecosystem.config.js
 # Test coverage
 coverage/
 .coverage/
+
+#md files for testing
+SECURITY.ENHANCEMENTS.md
+FINAL-STATUS.md
