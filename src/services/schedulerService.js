@@ -19,6 +19,7 @@ class SchedulerService {
         this.scheduleConfirmationCheck();
         this.scheduleOverdueCheck();
         this.scheduleLowAttendanceCheck();
+        this.scheduleTimetableConfirmationCleanup();
 
         console.log('✅ Scheduler Service initialized successfully');
     }
@@ -89,6 +90,26 @@ class SchedulerService {
 
         this.jobs.set('lowAttendanceCheck', job);
         console.log('📊 Low attendance check scheduled (daily at 6 PM UTC)');
+    }
+
+    scheduleTimetableConfirmationCleanup() {
+        // Clean up expired timetable confirmations every 5 minutes
+        const job = cron.schedule('*/5 * * * *', async () => {
+            try {
+                // Access the messageHandler through the main bot instance
+                if (global.attendanceBot && global.attendanceBot.messageHandler) {
+                    global.attendanceBot.messageHandler.cleanupExpiredConfirmations();
+                }
+            } catch (error) {
+                console.error('❌ Error in timetable confirmation cleanup:', error);
+            }
+        }, {
+            scheduled: true,
+            timezone: 'UTC'
+        });
+
+        this.jobs.set('timetableConfirmationCleanup', job);
+        console.log('🧹 Timetable confirmation cleanup scheduled (every 5 minutes)');
     }
 
     async checkForClassReminders() {

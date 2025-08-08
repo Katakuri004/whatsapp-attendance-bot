@@ -58,6 +58,9 @@ class AttendanceBot {
         this.schedulerService = new SchedulerService();
         this.databaseService = new DatabaseService();
 
+        // Make bot instance globally accessible for cleanup tasks
+        global.attendanceBot = this;
+
         // Security monitoring
         this.startSecurityMonitoring();
         
@@ -129,79 +132,122 @@ class AttendanceBot {
                     return;
                 }
 
-                // Rate limiting check
-                const messageType = message.body.startsWith('/') ? 'commands' : 'messages';
-                if (this.rateLimiter.isRateLimited(userId, messageType)) {
-                    this.logger.security('RATE_LIMIT_EXCEEDED', { 
-                        userId, 
-                        type: messageType,
-                        remaining: this.rateLimiter.getRemainingRequests(userId, messageType)
+                // Handle media messages differently
+                if (message.hasMedia) {
+                    // Rate limiting for media messages
+                    if (this.rateLimiter.isRateLimited(userId, 'media')) {
+                        this.logger.security('RATE_LIMIT_EXCEEDED', { 
+                            userId, 
+                            type: 'media',
+                            remaining: this.rateLimiter.getRemainingRequests(userId, 'media')
+                        });
+                        
+                        const resetTime = this.rateLimiter.getResetTime(userId, 'media');
+                        await this.client.sendMessage(message.from,
+                            `⏳ Rate limit exceeded. Please wait ${resetTime} seconds before sending more media.`
+                        );
+                        return;
+                    }
+
+                    // For media messages, skip body validation but ensure body exists
+                    const sanitizedMessage = { 
+                        ...message, 
+                        body: message.body || '' 
+                    };
+
+                    // Log media activity
+                    this.logger.userActivity(userId, 'MEDIA', {
+                        messageLength: sanitizedMessage.body.length,
+                        mediaType: message.type || 'unknown'
                     });
-                    
-                    const resetTime = this.rateLimiter.getResetTime(userId, messageType);
-                    await this.client.sendMessage(message.from,
-                        `⏳ Rate limit exceeded. Please wait ${resetTime} seconds before sending more ${messageType}.`
-                    );
-                    return;
-                }
 
-                // Input validation and sanitization
-                const inputValidation = this.inputValidator.securityCheck(message.body, { 
-                    type: 'message',
-                    userId 
-                });
-                
-                if (!inputValidation.isSecure) {
-                    this.logger.security('MALICIOUS_INPUT_DETECTED', { 
-                        userId, 
-                        warnings: inputValidation.warnings,
-                        originalInput: message.body
-                    });
-                    
-                    // Block user for security violations
-                    this.securityManager.blockUser(userId, 'Malicious input detected', 30 * 60 * 1000);
-                    
-                    await this.client.sendMessage(message.from,
-                        '🚫 Your message contains invalid content. Your account has been temporarily restricted.'
-                    );
-                    return;
-                }
-
-                // Use sanitized input
-                const sanitizedMessage = { 
-                    ...message, 
-                    body: inputValidation.sanitized 
-                };
-
-                // Log user activity
-                this.logger.userActivity(userId, messageType.toUpperCase(), {
-                    messageLength: sanitizedMessage.body.length,
-                    hasCommand: sanitizedMessage.body.startsWith('/')
-                });
-
-                // Process message
-                if (sanitizedMessage.body.startsWith('/')) {
-                    await this.commandHandler.handleCommand(sanitizedMessage, this.client, {
-                        rateLimiter: this.rateLimiter,
-                        validator: this.inputValidator,
-                        security: this.securityManager,
-                        logger: this.logger
-                    });
-                } else {
+                    // Process media message
                     await this.messageHandler.handleMessage(sanitizedMessage, this.client, {
                         rateLimiter: this.rateLimiter,
                         validator: this.inputValidator,
                         security: this.securityManager,
                         logger: this.logger
                     });
+                } else {
+                    // Handle text messages
+                    const messageType = message.body.startsWith('/') ? 'commands' : 'messages';
+                    
+                    // Rate limiting check
+                    if (this.rateLimiter.isRateLimited(userId, messageType)) {
+                        this.logger.security('RATE_LIMIT_EXCEEDED', { 
+                            userId, 
+                            type: messageType,
+                            remaining: this.rateLimiter.getRemainingRequests(userId, messageType)
+                        });
+                        
+                        const resetTime = this.rateLimiter.getResetTime(userId, messageType);
+                        await this.client.sendMessage(message.from,
+                            `⏳ Rate limit exceeded. Please wait ${resetTime} seconds before sending more ${messageType}.`
+                        );
+                        return;
+                    }
+
+                    // Input validation and sanitization for text messages
+                    const inputValidation = this.inputValidator.securityCheck(message.body, { 
+                        type: 'message',
+                        userId 
+                    });
+                    
+                    if (!inputValidation.isSecure) {
+                        this.logger.security('MALICIOUS_INPUT_DETECTED', { 
+                            userId, 
+                            warnings: inputValidation.warnings,
+                            originalInput: message.body
+                        });
+                        
+                        // Block user for security violations
+                        this.securityManager.blockUser(userId, 'Malicious input detected', 30 * 60 * 1000);
+                        
+                        await this.client.sendMessage(message.from,
+                            '🚫 Your message contains invalid content. Your account has been temporarily restricted.'
+                        );
+                        return;
+                    }
+
+                    // Use sanitized input
+                    const sanitizedMessage = { 
+                        ...message, 
+                        body: inputValidation.sanitized 
+                    };
+
+                    // Log user activity
+                    this.logger.userActivity(userId, messageType.toUpperCase(), {
+                        messageLength: sanitizedMessage.body.length,
+                        hasCommand: sanitizedMessage.body.startsWith('/')
+                    });
+
+                    // Process message
+                    if (sanitizedMessage.body.startsWith('/')) {
+                        await this.commandHandler.handleCommand(sanitizedMessage, this.client, {
+                            rateLimiter: this.rateLimiter,
+                            validator: this.inputValidator,
+                            security: this.securityManager,
+                            logger: this.logger
+                        });
+                    } else {
+                        await this.messageHandler.handleMessage(sanitizedMessage, this.client, {
+                            rateLimiter: this.rateLimiter,
+                            validator: this.inputValidator,
+                            security: this.securityManager,
+                            logger: this.logger
+                        });
+                    }
                 }
 
                 // Performance logging
                 const duration = Date.now() - startTime;
+                const messageType = message.hasMedia ? 'media' : (message.body?.startsWith('/') ? 'commands' : 'messages');
+                const messageLength = message.hasMedia ? (message.body?.length || 0) : (sanitizedMessage?.body?.length || 0);
+                
                 this.logger.performance('MESSAGE_PROCESSING', duration, { 
                     userId, 
                     messageType,
-                    messageLength: sanitizedMessage.body.length
+                    messageLength
                 });
 
             } catch (error) {

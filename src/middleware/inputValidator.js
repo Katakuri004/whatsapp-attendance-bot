@@ -254,17 +254,48 @@ class InputValidator {
                 return { isValid: false, error: 'Invalid message object' };
             }
 
-            const requiredFields = ['from', 'body'];
-            for (const field of requiredFields) {
-                if (!message[field]) {
-                    return { isValid: false, error: `Missing required field: ${field}` };
-                }
+            // Check for required 'from' field
+            if (!message.from) {
+                return { isValid: false, error: 'Missing required field: from' };
             }
 
             // Validate sender ID format
             const phoneValidation = this.validatePhoneNumber(message.from.replace('@c.us', ''));
             if (!phoneValidation.isValid) {
                 return { isValid: false, error: 'Invalid sender phone number' };
+            }
+
+            // Handle media messages (images, documents, etc.)
+            if (message.hasMedia) {
+                // For media messages, body is optional
+                if (message.body) {
+                    // If body exists, validate it
+                    const bodyValidation = this.validateInput(message.body, 'message');
+                    if (!bodyValidation.isValid) {
+                        return bodyValidation;
+                    }
+                    return { 
+                        isValid: true, 
+                        sanitized: {
+                            ...message,
+                            body: bodyValidation.sanitized
+                        }
+                    };
+                } else {
+                    // Media message without body is valid
+                    return { 
+                        isValid: true, 
+                        sanitized: {
+                            ...message,
+                            body: '' // Ensure body field exists
+                        }
+                    };
+                }
+            }
+
+            // For text messages, body is required
+            if (!message.body) {
+                return { isValid: false, error: 'Missing required field: body' };
             }
 
             // Validate message body

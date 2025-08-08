@@ -83,6 +83,12 @@ class CommandHandler {
 • */drop <subject>* - Remove a subject
 • */list* - Show all your subjects
 
+📸 *AI Timetable Parser:*
+• Send a screenshot of your timetable
+• I'll show you all classes found and ask for confirmation
+• Reply "yes" to add all classes, "no" to cancel
+• Works with clear, readable timetable images
+
 📊 *Attendance:*
 • */show attendance* - View all attendance
 • */show <subject>* - View specific subject attendance
@@ -96,6 +102,7 @@ class CommandHandler {
 - Reply "yes" or "no" to attendance confirmations
 - If you don't reply within 2 hours, you'll be marked absent
 - I'll alert you if attendance drops below 75%
+- Send a timetable image for automatic setup!
         `.trim();
 
         await this.client.sendMessage(message.from, helpText);

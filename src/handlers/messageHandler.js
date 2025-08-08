@@ -3,16 +3,21 @@ const Subject = require('../models/Subject');
 const AttendanceRecord = require('../models/AttendanceRecord');
 const Helpers = require('../utils/helpers');
 const { ATTENDANCE_RESPONSES } = require('../utils/constants');
+const TimetableParserService = require('../services/timetableParserService');
+const { getLogger } = require('../utils/logger');
 
 class MessageHandler {
     constructor(client) {
         this.client = client; // Store the client instance
         this.pendingAttendanceResponses = new Map(); // Store pending attendance confirmations
+        this.pendingTimetableConfirmations = new Map(); // Store pending timetable confirmations
+        this.timetableParser = new TimetableParserService();
+        this.logger = getLogger(); // Initialize logger
     }
 
     async handleMessage(message, client) {
         const userId = message.from.replace('@c.us', '');
-        const messageBody = message.body.trim().toLowerCase();
+        const messageBody = message.body?.trim().toLowerCase() || '';
 
         // Get user from database
         let user = await User.findByWhatsAppId(userId);
@@ -23,9 +28,21 @@ class MessageHandler {
             return;
         }
 
+        // Handle image messages (timetable parsing)
+        if (message.hasMedia && message.type === 'image') {
+            await this.handleTimetableImage(message, client, user);
+            return;
+        }
+
         // Handle attendance responses
         if (this.isAttendanceResponse(messageBody)) {
             await this.handleAttendanceResponse(message, client, user, messageBody);
+            return;
+        }
+
+        // Handle timetable confirmation responses
+        if (this.isTimetableConfirmationResponse(messageBody)) {
+            await this.handleTimetableConfirmationResponse(message, client, user, messageBody);
             return;
         }
 
@@ -224,6 +241,303 @@ class MessageHandler {
             messageBody === response || 
             messageBody.includes(response)
         );
+    }
+
+    /**
+     * Handle timetable image parsing
+     * @param {Object} message - WhatsApp message object
+     * @param {Object} client - WhatsApp client
+     * @param {Object} user - User object
+     */
+    async handleTimetableImage(message, client, user) {
+        const userId = message.from.replace('@c.us', '');
+        
+        try {
+            // Check if AI service is available
+            if (!this.timetableParser.isAvailable()) {
+                await this.client.sendMessage(message.from,
+                    '🤖 *AI Timetable Parser*\n\n' +
+                    'Sorry, the AI timetable parser is not configured.\n\n' +
+                    'Please add your subjects manually using:\n' +
+                    '*/add <subject> on <day> at <time> for <hours>*\n\n' +
+                    'Example: /add Mathematics on Monday at 10:00 for 2'
+                );
+                return;
+            }
+
+            // Send processing message
+            await this.client.sendMessage(message.from,
+                '🔍 *Processing Timetable Image*\n\n' +
+                'I\'m analyzing your timetable image...\n' +
+                'This may take a few seconds.'
+            );
+
+            // Download the image
+            const media = await message.downloadMedia();
+            if (!media || !media.data) {
+                throw new Error('Failed to download image');
+            }
+
+            // Convert base64 to buffer
+            const imageBuffer = Buffer.from(media.data, 'base64');
+
+            // Parse the timetable using AI
+            const parsedClasses = await this.timetableParser.parseTimetableImage(imageBuffer, userId);
+
+            if (parsedClasses.length === 0) {
+                await this.client.sendMessage(message.from,
+                    '❌ *No Classes Found*\n\n' +
+                    'I couldn\'t find any classes in your timetable image.\n\n' +
+                    'Please make sure:\n' +
+                    '• The image is clear and readable\n' +
+                    '• The timetable is well-structured\n' +
+                    '• Text is not too small or blurry\n\n' +
+                    'You can still add subjects manually using:\n' +
+                    '*/add <subject> on <day> at <time> for <hours>*'
+                );
+                return;
+            }
+
+            // Filter out existing subjects
+            const newClasses = [];
+            const existingClasses = [];
+
+            for (const classData of parsedClasses) {
+                const existingSubject = await Subject.findByUserAndName(user._id, classData.subject);
+                if (existingSubject) {
+                    existingClasses.push(classData);
+                } else {
+                    newClasses.push(classData);
+                }
+            }
+
+            // Store the new classes for confirmation
+            this.pendingTimetableConfirmations.set(userId, {
+                classes: newClasses,
+                timestamp: Date.now()
+            });
+
+            // Send confirmation message
+            let response = `📋 *Timetable Parsed Successfully!*\n\n`;
+            response += `I found *${parsedClasses.length} classes* in your timetable.\n\n`;
+
+            if (newClasses.length > 0) {
+                response += `🆕 *${newClasses.length} new classes to add:*\n`;
+                for (let i = 0; i < newClasses.length; i++) {
+                    const cls = newClasses[i];
+                    response += `${i + 1}. *${cls.subject}*\n`;
+                    response += `   📅 ${cls.day} | ⏰ ${cls.startTime}-${cls.endTime} | ⏱️ ${cls.duration}h\n\n`;
+                }
+            }
+
+            if (existingClasses.length > 0) {
+                response += `⚠️ *${existingClasses.length} classes already exist:*\n`;
+                for (const cls of existingClasses) {
+                    response += `• ${cls.subject} (${cls.day} ${cls.startTime}-${cls.endTime})\n`;
+                }
+                response += '\n';
+            }
+
+            if (newClasses.length > 0) {
+                response += `🤔 *Do you want to add these classes?*\n\n`;
+                response += `Reply with:\n`;
+                response += `• *"yes"* or *"confirm"* - Add all classes\n`;
+                response += `• *"no"* or *"cancel"* - Cancel and don't add any\n`;
+                response += `• *"skip"* - Skip this confirmation (auto-add)\n\n`;
+                response += `⏰ *Confirmation expires in 5 minutes*`;
+            } else {
+                response += `ℹ️ *All classes already exist in your schedule*\n\n`;
+                response += `Type */list* to see all your subjects`;
+            }
+
+            await this.client.sendMessage(message.from, response);
+
+        } catch (error) {
+            this.logger.error('Timetable image processing failed', error, { userId });
+            
+            await this.client.sendMessage(message.from,
+                '❌ *Timetable Processing Failed*\n\n' +
+                'Sorry, I couldn\'t process your timetable image.\n\n' +
+                'Please try:\n' +
+                '• Sending a clearer image\n' +
+                '• Making sure the text is readable\n' +
+                '• Using a well-structured timetable\n\n' +
+                'Or add subjects manually:\n' +
+                '*/add <subject> on <day> at <time> for <hours>*'
+            );
+        }
+    }
+
+    /**
+     * Check if message is a timetable confirmation response
+     * @param {string} messageBody - Message body
+     * @returns {boolean} True if it's a confirmation response
+     */
+    isTimetableConfirmationResponse(messageBody) {
+        const confirmationKeywords = ['yes', 'confirm', 'no', 'cancel', 'skip'];
+        return confirmationKeywords.some(keyword => 
+            messageBody.toLowerCase().includes(keyword)
+        );
+    }
+
+    /**
+     * Handle timetable confirmation response
+     * @param {Object} message - WhatsApp message
+     * @param {Object} client - WhatsApp client
+     * @param {Object} user - User object
+     * @param {string} messageBody - Message body
+     */
+    async handleTimetableConfirmationResponse(message, client, user, messageBody) {
+        const userId = message.from.replace('@c.us', '');
+        const pendingConfirmation = this.pendingTimetableConfirmations.get(userId);
+
+        if (!pendingConfirmation) {
+            await this.client.sendMessage(message.from,
+                '❌ *No pending timetable confirmation*\n\n' +
+                'Please send a timetable image to parse.'
+            );
+            return;
+        }
+
+        // Check if confirmation has expired (5 minutes)
+        const now = Date.now();
+        const timeDiff = now - pendingConfirmation.timestamp;
+        if (timeDiff > 5 * 60 * 1000) { // 5 minutes
+            this.pendingTimetableConfirmations.delete(userId);
+            await this.client.sendMessage(message.from,
+                '⏰ *Confirmation expired*\n\n' +
+                'The timetable confirmation has expired.\n' +
+                'Please send the timetable image again.'
+            );
+            return;
+        }
+
+        const response = messageBody.toLowerCase().trim();
+        let action = '';
+
+        if (response.includes('yes') || response.includes('confirm')) {
+            action = 'confirm';
+        } else if (response.includes('no') || response.includes('cancel')) {
+            action = 'cancel';
+        } else if (response.includes('skip')) {
+            action = 'skip';
+        } else {
+            await this.client.sendMessage(message.from,
+                '❓ *Invalid response*\n\n' +
+                'Please reply with:\n' +
+                '• *"yes"* or *"confirm"* - Add all classes\n' +
+                '• *"no"* or *"cancel"* - Cancel and don\'t add any\n' +
+                '• *"skip"* - Skip this confirmation (auto-add)'
+            );
+            return;
+        }
+
+        // Remove the pending confirmation
+        this.pendingTimetableConfirmations.delete(userId);
+
+        if (action === 'cancel') {
+            await this.client.sendMessage(message.from,
+                '❌ *Timetable addition cancelled*\n\n' +
+                'No classes were added to your schedule.\n\n' +
+                'You can still add subjects manually using:\n' +
+                '*/add <subject> on <day> at <time> for <hours>*'
+            );
+            return;
+        }
+
+        // Add classes to database
+        const classes = pendingConfirmation.classes;
+        const addedClasses = [];
+        const failedClasses = [];
+
+        for (const classData of classes) {
+            try {
+                // Double-check if subject already exists
+                const existingSubject = await Subject.findByUserAndName(user._id, classData.subject);
+                if (existingSubject) {
+                    failedClasses.push({
+                        subject: classData.subject,
+                        reason: 'Already exists'
+                    });
+                    continue;
+                }
+
+                // Create new subject
+                const subject = new Subject({
+                    userId: user._id,
+                    subjectName: classData.subject,
+                    schedule: {
+                        day: classData.day,
+                        time: classData.startTime,
+                        duration: classData.duration
+                    }
+                });
+
+                await subject.save();
+                addedClasses.push(classData);
+
+            } catch (error) {
+                this.logger.error('Failed to add class from AI parsing', error, {
+                    userId,
+                    classData
+                });
+                failedClasses.push({
+                    subject: classData.subject,
+                    reason: 'Database error'
+                });
+            }
+        }
+
+        // Send results to user
+        let responseMessage = `🎉 *Timetable Classes Added!*\n\n`;
+
+        if (addedClasses.length > 0) {
+            responseMessage += `✅ *Successfully added ${addedClasses.length} classes:*\n`;
+            for (const cls of addedClasses) {
+                responseMessage += `• ${cls.subject} (${cls.day} ${cls.startTime}-${cls.endTime})\n`;
+            }
+            responseMessage += '\n';
+        }
+
+        if (failedClasses.length > 0) {
+            responseMessage += `⚠️ *${failedClasses.length} classes failed:*\n`;
+            for (const cls of failedClasses) {
+                responseMessage += `• ${cls.subject} (${cls.reason})\n`;
+            }
+            responseMessage += '\n';
+        }
+
+        responseMessage += `📊 *Your Schedule*\n`;
+        responseMessage += `Total subjects: ${await Subject.countDocuments({ userId: user._id })}\n\n`;
+        responseMessage += `Type */list* to see all your subjects\n`;
+        responseMessage += `Type */show attendance* to view attendance`;
+
+        await this.client.sendMessage(message.from, responseMessage);
+    }
+
+    /**
+     * Clean up expired confirmations (called periodically)
+     */
+    cleanupExpiredConfirmations() {
+        const now = Date.now();
+        const expiredUsers = [];
+
+        for (const [userId, confirmation] of this.pendingTimetableConfirmations.entries()) {
+            const timeDiff = now - confirmation.timestamp;
+            if (timeDiff > 5 * 60 * 1000) { // 5 minutes
+                expiredUsers.push(userId);
+            }
+        }
+
+        expiredUsers.forEach(userId => {
+            this.pendingTimetableConfirmations.delete(userId);
+        });
+
+        if (expiredUsers.length > 0) {
+            this.logger.info('Cleaned up expired timetable confirmations', {
+                expiredCount: expiredUsers.length
+            });
+        }
     }
 
 
