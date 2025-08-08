@@ -53,8 +53,8 @@ class AttendanceBot {
         });
 
         // Initialize handlers with security middleware
-        this.commandHandler = new CommandHandler();
-        this.messageHandler = new MessageHandler();
+        this.commandHandler = new CommandHandler(this.client);
+        this.messageHandler = new MessageHandler(this.client);
         this.schedulerService = new SchedulerService();
         this.databaseService = new DatabaseService();
 
@@ -120,7 +120,7 @@ class AttendanceBot {
                     });
                     
                     if (blockStatus.remainingTime > 60000) { // Only notify if > 1 minute remaining
-                        await message.reply(
+                        await this.client.sendMessage(message.from,
                             `🚫 Your account is temporarily blocked.\n` +
                             `Reason: ${blockStatus.reason}\n` +
                             `Try again in ${Math.ceil(blockStatus.remainingTime / 60000)} minutes.`
@@ -139,7 +139,7 @@ class AttendanceBot {
                     });
                     
                     const resetTime = this.rateLimiter.getResetTime(userId, messageType);
-                    await message.reply(
+                    await this.client.sendMessage(message.from,
                         `⏳ Rate limit exceeded. Please wait ${resetTime} seconds before sending more ${messageType}.`
                     );
                     return;
@@ -161,7 +161,7 @@ class AttendanceBot {
                     // Block user for security violations
                     this.securityManager.blockUser(userId, 'Malicious input detected', 30 * 60 * 1000);
                     
-                    await message.reply(
+                    await this.client.sendMessage(message.from,
                         '🚫 Your message contains invalid content. Your account has been temporarily restricted.'
                     );
                     return;
@@ -223,13 +223,13 @@ class AttendanceBot {
                 });
 
                 // Send user-friendly error message
-                if (message && message.reply) {
+                if (message && message.from) {
                     try {
                         const userMessage = errorResult.recovery?.success 
                             ? 'Processing your request, please wait...'
                             : this.errorHandler.getUserFriendlyMessage(errorResult.errorInfo || {});
                             
-                        await message.reply(userMessage);
+                        await this.client.sendMessage(message.from, userMessage);
                     } catch (replyError) {
                         this.logger.error('Failed to send error reply', replyError, { userId });
                     }

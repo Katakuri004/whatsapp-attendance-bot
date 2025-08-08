@@ -7,7 +7,9 @@ const compromise = require('compromise');
 const moment = require('moment-timezone');
 
 class CommandHandler {
-    constructor() {
+    // Step 1: Accept the client in the constructor
+    constructor(client) {
+        this.client = client; // Store the client instance
         this.commands = {
             '/start': this.handleStart.bind(this),
             '/help': this.handleHelp.bind(this),
@@ -20,18 +22,18 @@ class CommandHandler {
         };
     }
 
-    async handleCommand(message, client) {
+    // Step 2: Remove client from this method's parameters
+    async handleCommand(message) {
         const userId = message.from.replace('@c.us', '');
         const messageBody = message.body.trim();
         const [command, ...args] = messageBody.split(' ');
 
-        // Check if user exists and is registered
         let user = await User.findByWhatsAppId(userId);
         
-        // Handle registration flow for non-registered users
         if (!user || !user.isFullyRegistered()) {
             if (command !== '/start') {
-                await message.reply(
+                // Step 3: Use this.client.sendMessage instead of message.reply
+                await this.client.sendMessage(message.from,
                     '👋 Welcome! You need to register first to use this bot.\n\n' +
                     'Please type */start* to begin registration.'
                 );
@@ -41,17 +43,17 @@ class CommandHandler {
 
         const handler = this.commands[command.toLowerCase()];
         if (handler) {
-            await handler(message, client, args, user);
+            await handler(message, args, user);
         } else {
-            await this.handleUnknownCommand(message, client);
+            await this.handleUnknownCommand(message);
         }
     }
 
-    async handleStart(message, client, args, user) {
+    async handleStart(message, args, user) {
         const userId = message.from.replace('@c.us', '');
         
         if (user && user.isFullyRegistered()) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `👋 Hello ${user.getDisplayName()}!\n\n` +
                 'You are already registered. Type */help* to see available commands.'
             );
@@ -63,14 +65,14 @@ class CommandHandler {
             await user.save();
         }
 
-        await message.reply(
+        await this.client.sendMessage(message.from,
             '🎓 *Welcome to AttendanceBot!*\n\n' +
             'I\'ll help you track your class attendance. Let\'s get you set up!\n\n' +
             'First, what\'s your name?'
         );
     }
 
-    async handleHelp(message, client) {
+    async handleHelp(message) {
         const helpText = `
 🤖 *AttendanceBot Help*
 
@@ -96,14 +98,14 @@ class CommandHandler {
 - I'll alert you if attendance drops below 75%
         `.trim();
 
-        await message.reply(helpText);
+        await this.client.sendMessage(message.from, helpText);
     }
 
-    async handleAdd(message, client, args, user) {
+    async handleAdd(message, args, user) {
         const fullCommand = args.join(' ');
         
         if (!fullCommand) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 '📝 *Add a Subject*\n\n' +
                 'Format: */add <subject> on <day> at <time> for <hours>*\n\n' +
                 'Examples:\n' +
@@ -118,7 +120,7 @@ class CommandHandler {
             const parsed = this.parseAddCommand(fullCommand);
             
             if (!parsed) {
-                await message.reply(
+                await this.client.sendMessage(message.from,
                     '❌ I couldn\'t understand that format.\n\n' +
                     'Please use: */add <subject> on <day> at <time> for <hours>*\n\n' +
                     'Example: /add Mathematics on Monday at 10:00 for 2'
@@ -128,14 +130,12 @@ class CommandHandler {
 
             const { subjectName, day, time, duration } = parsed;
 
-            // Check if subject already exists
             const existingSubject = await Subject.findByUserAndName(user._id, subjectName);
             if (existingSubject) {
-                await message.reply(`❌ You already have a subject called "${subjectName}".`);
+                await this.client.sendMessage(message.from, `❌ You already have a subject called "${subjectName}".`);
                 return;
             }
 
-            // Create new subject
             const subject = new Subject({
                 userId: user._id,
                 subjectName,
@@ -144,7 +144,7 @@ class CommandHandler {
 
             await subject.save();
 
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `✅ *Subject Added Successfully!*\n\n` +
                 `📚 Subject: ${subjectName}\n` +
                 `📅 Day: ${day}\n` +
@@ -155,16 +155,16 @@ class CommandHandler {
 
         } catch (error) {
             console.error('Error adding subject:', error);
-            await message.reply('❌ Sorry, there was an error adding the subject. Please try again.');
+            await this.client.sendMessage(message.from, '❌ Sorry, there was an error adding the subject. Please try again.');
         }
     }
 
-    async handleDrop(message, client, args, user) {
+    async handleDrop(message, args, user) {
         const subjectName = args.join(' ').trim();
         
         if (!subjectName) {
-            await message.reply(
-                '📝 *Drop a Subject*\n\n' +
+            await this.client.sendMessage(message.from,
+                '� *Drop a Subject*\n\n' +
                 'Format: */drop <subject name>*\n\n' +
                 'Example: /drop Mathematics'
             );
@@ -175,14 +175,14 @@ class CommandHandler {
             const subject = await Subject.findByUserAndName(user._id, subjectName);
             
             if (!subject) {
-                await message.reply(`❌ Subject "${subjectName}" not found.`);
+                await this.client.sendMessage(message.from, `❌ Subject "${subjectName}" not found.`);
                 return;
             }
 
             subject.isActive = false;
             await subject.save();
 
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `✅ *Subject Dropped*\n\n` +
                 `📚 "${subject.subjectName}" has been removed from your schedule.\n\n` +
                 `Your attendance history has been preserved.`
@@ -190,11 +190,11 @@ class CommandHandler {
 
         } catch (error) {
             console.error('Error dropping subject:', error);
-            await message.reply('❌ Sorry, there was an error dropping the subject. Please try again.');
+            await this.client.sendMessage(message.from, '❌ Sorry, there was an error dropping the subject. Please try again.');
         }
     }
 
-    async handleShow(message, client, args, user) {
+    async handleShow(message, args, user) {
         const parameter = args.join(' ').trim().toLowerCase();
         
         try {
@@ -205,7 +205,7 @@ class CommandHandler {
             }
         } catch (error) {
             console.error('Error showing attendance:', error);
-            await message.reply('❌ Sorry, there was an error retrieving attendance data.');
+            await this.client.sendMessage(message.from, '❌ Sorry, there was an error retrieving attendance data.');
         }
     }
 
@@ -213,7 +213,7 @@ class CommandHandler {
         const subjects = await Subject.findActiveByUser(user._id);
         
         if (subjects.length === 0) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 '📚 *No Subjects Found*\n\n' +
                 'You haven\'t added any subjects yet.\n' +
                 'Use */add* to add your first subject!'
@@ -233,14 +233,14 @@ class CommandHandler {
 
         response += '_💡 Type /show <subject name> for detailed view_';
         
-        await message.reply(response);
+        await this.client.sendMessage(message.from, response);
     }
 
     async showSubjectAttendance(message, user, subjectName) {
         const subject = await Subject.findByUserAndName(user._id, subjectName);
         
         if (!subject) {
-            await message.reply(`❌ Subject "${subjectName}" not found.`);
+            await this.client.sendMessage(message.from, `❌ Subject "${subjectName}" not found.`);
             return;
         }
 
@@ -264,14 +264,14 @@ class CommandHandler {
             response += `You need to attend ${classesNeeded} more classes to reach 75%`;
         }
 
-        await message.reply(response);
+        await this.client.sendMessage(message.from, response);
     }
 
-    async handleList(message, client, args, user) {
+    async handleList(message, args, user) {
         const subjects = await Subject.findActiveByUser(user._id);
         
         if (subjects.length === 0) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 '📚 *No Subjects Found*\n\n' +
                 'You haven\'t added any subjects yet.\n' +
                 'Use */add* to add your first subject!'
@@ -287,14 +287,14 @@ class CommandHandler {
             response += `   ⏱️ ${subject.schedule.duration} hour(s)\n\n`;
         });
 
-        await message.reply(response);
+        await this.client.sendMessage(message.from, response);
     }
 
-    async handleTimezone(message, client, args, user) {
+    async handleTimezone(message, args, user) {
         const timezone = args.join(' ').trim();
         
         if (!timezone) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `🌍 *Current Timezone*\n\n` +
                 `Your timezone: ${user.timezone}\n\n` +
                 `To change it, use: */timezone <timezone>*\n` +
@@ -304,20 +304,19 @@ class CommandHandler {
         }
 
         try {
-            // Validate timezone
             moment.tz.zone(timezone);
             
             user.timezone = timezone;
             await user.save();
             
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `✅ *Timezone Updated*\n\n` +
                 `Your timezone has been set to: ${timezone}\n` +
                 `Current time: ${moment().tz(timezone).format('LLLL')}`
             );
             
         } catch (error) {
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 `❌ Invalid timezone "${timezone}"\n\n` +
                 `Please use a valid timezone like:\n` +
                 `• Asia/Kolkata\n` +
@@ -327,7 +326,7 @@ class CommandHandler {
         }
     }
 
-    async handleSettings(message, client, args, user) {
+    async handleSettings(message, args, user) {
         const response = `⚙️ *Your Settings*\n\n` +
             `👤 Name: ${user.name}\n` +
             `🌍 Timezone: ${user.timezone}\n` +
@@ -335,11 +334,11 @@ class CommandHandler {
             `⚠️ Low Attendance Alerts: ${user.preferences.lowAttendanceAlerts ? 'Enabled' : 'Disabled'}\n\n` +
             `_To change timezone: /timezone <timezone>_`;
 
-        await message.reply(response);
+        await this.client.sendMessage(message.from, response);
     }
 
-    async handleUnknownCommand(message, client) {
-        await message.reply(
+    async handleUnknownCommand(message) {
+        await this.client.sendMessage(message.from,
             '❓ Unknown command.\n\n' +
             'Type */help* to see all available commands.'
         );
@@ -347,14 +346,10 @@ class CommandHandler {
 
     parseAddCommand(input) {
         try {
-            // Normalize the input
             const normalizedInput = input.toLowerCase().trim();
             
-            // Use multiple regex patterns to handle various formats
             const patterns = [
-                // Pattern 1: "subject on day at time for duration"
                 /^(.+?)\s+on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+(\d{1,2}:?\d{0,2}(?:am|pm)?)\s+for\s+(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)?$/i,
-                // Pattern 2: "subject day time duration"
                 /^(.+?)\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2}:?\d{0,2}(?:am|pm)?)\s+(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)?$/i
             ];
 
@@ -378,8 +373,6 @@ class CommandHandler {
             return null;
         }
     }
-
-
 }
 
 module.exports = CommandHandler;

@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema({
     },
     name: {
         type: String,
-        required: true,
+        required: false, // Allow null during registration
         trim: true
     },
     isRegistered: {
@@ -40,7 +40,7 @@ const userSchema = new mongoose.Schema({
 
 // Instance methods
 userSchema.methods.isFullyRegistered = function() {
-    return this.isRegistered && this.registrationStep === 'completed';
+    return this.isRegistered && this.registrationStep === 'completed' && this.name;
 };
 
 userSchema.methods.getDisplayName = function() {
@@ -55,8 +55,8 @@ userSchema.statics.findByWhatsAppId = function(whatsappId) {
 userSchema.statics.createNewUser = function(whatsappId, name = null) {
     return new this({
         _id: whatsappId,
-        name: name,
-        isRegistered: !name, // If name is provided, mark as registered
+        name: name || null,
+        isRegistered: !!name, // If name is provided, mark as registered
         registrationStep: name ? 'timezone' : 'name'
     });
 };

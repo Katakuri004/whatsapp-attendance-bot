@@ -5,7 +5,8 @@ const Helpers = require('../utils/helpers');
 const { ATTENDANCE_RESPONSES } = require('../utils/constants');
 
 class MessageHandler {
-    constructor() {
+    constructor(client) {
+        this.client = client; // Store the client instance
         this.pendingAttendanceResponses = new Map(); // Store pending attendance confirmations
     }
 
@@ -43,7 +44,7 @@ class MessageHandler {
         switch (user.registrationStep) {
             case 'name':
                 if (messageBody.length < 2 || messageBody.length > 50) {
-                    await message.reply(
+                    await this.client.sendMessage(message.from,
                         '❌ Please enter a valid name (2-50 characters).\n\n' +
                         'What\'s your name?'
                     );
@@ -54,7 +55,7 @@ class MessageHandler {
                 user.registrationStep = 'timezone';
                 await user.save();
 
-                await message.reply(
+                await this.client.sendMessage(message.from,
                     `Nice to meet you, ${user.name}! 👋\n\n` +
                     'Now, what\'s your timezone? This helps me send reminders at the right time.\n\n' +
                     'Examples:\n' +
@@ -89,7 +90,7 @@ class MessageHandler {
                     user.registrationStep = 'completed';
                     await user.save();
 
-                    await message.reply(
+                    await this.client.sendMessage(message.from,
                         `🎉 *Registration Complete!*\n\n` +
                         `Welcome to AttendanceBot, ${user.name}!\n\n` +
                         `✅ Name: ${user.name}\n` +
@@ -103,7 +104,7 @@ class MessageHandler {
                     );
 
                 } catch (error) {
-                    await message.reply(
+                    await this.client.sendMessage(message.from,
                         `❌ "${timezone}" is not a valid timezone.\n\n` +
                         'Please try again with a valid timezone like:\n' +
                         '• Asia/Kolkata\n' +
@@ -116,7 +117,7 @@ class MessageHandler {
 
             default:
                 // Shouldn't reach here, but handle gracefully
-                await message.reply(
+                await this.client.sendMessage(message.from,
                     'Something went wrong with registration. Please type */start* to begin again.'
                 );
         }
@@ -131,7 +132,7 @@ class MessageHandler {
             }).populate('subjectId').sort({ scheduledTime: -1 }).limit(5);
 
             if (pendingRecords.length === 0) {
-                await message.reply(
+                await this.client.sendMessage(message.from,
                     '🤔 I don\'t have any pending attendance confirmations for you.\n\n' +
                     'If you think this is a mistake, please contact support.'
                 );
@@ -146,7 +147,7 @@ class MessageHandler {
                 await record.markPresent();
                 await record.subjectId.markAttendance(true);
 
-                await message.reply(
+                await this.client.sendMessage(message.from,
                     `✅ *Attendance Marked: Present*\n\n` +
                     `📚 Subject: ${record.subjectId.subjectName}\n` +
                     `📅 Date: ${record.date.toDateString()}\n\n` +
@@ -169,12 +170,12 @@ class MessageHandler {
                     response += `Your attendance is below 75%. Please attend more classes.`;
                 }
 
-                await message.reply(response);
+                await this.client.sendMessage(message.from, response);
             }
 
         } catch (error) {
             console.error('Error handling attendance response:', error);
-            await message.reply(
+            await this.client.sendMessage(message.from,
                 '❌ Sorry, there was an error recording your attendance. Please try again.'
             );
         }
@@ -197,13 +198,13 @@ class MessageHandler {
         // Check for partial matches
         for (const [key, response] of Object.entries(responses)) {
             if (messageBody.includes(key)) {
-                await message.reply(response);
+                await this.client.sendMessage(message.from, response);
                 return;
             }
         }
 
         // Default response for unrecognized messages
-        await message.reply(
+        await this.client.sendMessage(message.from,
             '🤔 I didn\'t understand that.\n\n' +
             'Type */help* to see available commands, or use */add* to add a subject.'
         );
